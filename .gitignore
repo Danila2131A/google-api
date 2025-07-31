@@ -25,3 +25,16 @@ dist-ssr
 # .gitignore
 .env.local
 .vercel
+
+# Секреты
+.env
+
+# Зависимости
+node_modules
+
+# Папка сборки
+dist
+
+# Логи и кэш
+*.log
+.npm
