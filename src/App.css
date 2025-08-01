@@ -282,6 +282,28 @@ pre:hover .copy-button { opacity: 1; }
 .skeleton-line.short { width: 60%; }
 .toast-notification { background-color: var(--bg-sidebar); color: var(--text-primary); box-shadow: 0 4px 12px var(--shadow-color); border-radius: var(--radius-large); }
 
+.system-instruction-container {
+    padding: 8px 0;
+    flex-shrink: 0;
+}
+.system-instruction-input {
+    width: 100%;
+    background-color: var(--bg-input);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-medium);
+    padding: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    resize: none;
+    transition: all var(--transition-fast);
+}
+.system-instruction-input:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    color: var(--text-primary);
+}
+
 /*
 * ===============================================
 * --- АДАПТАЦИЯ И ПОВЕДЕНИЕ МАКЕТА ---
@@ -376,4 +398,29 @@ pre:hover .copy-button { opacity: 1; }
     .message-list {
         padding-top: 72px;
     }
+}
+
+/* --- Индикатор загрузки изображения --- */
+.image-preview {
+    position: relative; /* Чтобы спиннер позиционировался относительно превью */
+}
+
+.image-loading-spinner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255, 255, 255, 0.4);
+    border-top-color: var(--accent-color);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    z-index: 1; /* Чтобы был поверх изображения */
+}
+
+/* --- Стили для Drag & Drop --- */
+.message-form.is-dragging {
+    border-color: var(--accent-color); /* Например, подсвечивать границу при перетаскивании */
+    box-shadow: 0 0 15px var(--accent-color);
 }

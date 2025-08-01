@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+// App.jsx (Полный код с исправлением)
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import { marked } from 'marked';
 import hljs from 'highlight.js';
@@ -8,6 +10,10 @@ import './App.css';
 
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
+// Максимальный размер изображения в байтах (например, 5 МБ)
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
+
+// --- Вспомогательные функции ---
 const initializeChatSession = (history, systemInstruction) => {
     try {
         const genAI = new GoogleGenerativeAI(apiKey);
@@ -36,6 +42,7 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
     reader.onerror = reject;
 });
 
+// --- Компоненты ---
 const EmptyChatView = () => (
     <div className="empty-chat-container">
         <div className="empty-chat-content">
@@ -57,15 +64,27 @@ const LoadingSkeleton = () => (
     </div>
 );
 
+// --- Основной компонент приложения ---
 function App() {
     const [chats, setChats] = useState(() => {
         try {
             const savedChats = localStorage.getItem('chat_history');
             if (savedChats) {
                 const parsedChats = JSON.parse(savedChats);
-                return parsedChats.map(chat => ({ ...chat, session: initializeChatSession(chat.history || [], chat.systemInstruction || '') }));
+                if (parsedChats && Array.isArray(parsedChats)) {
+                    return parsedChats.map(chat => ({
+                        ...chat,
+                        session: initializeChatSession(chat.history || [], chat.systemInstruction || '')
+                    }));
+                } else {
+                    console.warn("Данные чатов в localStorage не являются валидным массивом:", parsedChats);
+                    return [];
+                }
             }
-        } catch (error) { console.error("Не удалось загрузить чаты:", error); }
+        } catch (error) {
+            console.error("Не удалось загрузить чаты из localStorage:", error);
+            return [];
+        }
         return [];
     });
 
@@ -78,8 +97,11 @@ function App() {
     const [isListening, setIsListening] = useState(false);
     const [imageFile, setImageFile] = useState(null);
     const [imagePreview, setImagePreview] = useState('');
+    const [isImageLoading, setIsImageLoading] = useState(false);
     const [editingMessage, setEditingMessage] = useState(null);
+    const [isDragging, setIsDragging] = useState(false);
 
+    const textareaRef = useRef(null);
     const recognitionRef = useRef(null);
     const messagesEndRef = useRef(null);
     const messageListRef = useRef(null);
@@ -99,7 +121,7 @@ function App() {
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [chats, activeChatId]);
+    }, [chats, activeChatId, isLoading]);
 
     useEffect(() => {
         if (!messageListRef.current) return;
@@ -123,26 +145,36 @@ function App() {
         document.body.className = theme;
     }, [theme]);
 
+    useEffect(() => {
+        if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
+        }
+    }, [userInput]);
+
     const createNewChat = () => {
-        const newChat = { 
-            id: Date.now(), 
-            title: 'Новый чат', 
-            history: [], 
+        const newChat = {
+            id: Date.now(),
+            title: 'Новый чат',
+            history: [],
             session: initializeChatSession([], ''),
-            systemInstruction: '' 
+            systemInstruction: ''
         };
-        if (!newChat.session) return;
+        if (!newChat.session) return null;
         setChats(prev => [newChat, ...prev]);
         setActiveChatId(newChat.id);
         if (window.innerWidth <= 768) {
             setIsSidebarOpen(false);
         }
+        return newChat;
     };
 
     const deleteChat = (e, chatIdToDelete) => {
         e.stopPropagation();
         setChats(prev => prev.filter(chat => chat.id !== chatIdToDelete));
-        if (activeChatId === chatIdToDelete) setActiveChatId(null);
+        if (activeChatId === chatIdToDelete) {
+            setActiveChatId(null);
+        }
     };
 
     const handleSelectChat = (chatId) => {
@@ -166,12 +198,28 @@ function App() {
         }));
     };
 
+    const handleImageFile = useCallback((file) => {
+        if (!file) return;
+
+        if (!file.type.startsWith('image/')) {
+            toast.error("Пожалуйста, выберите файл изображения.");
+            return;
+        }
+
+        if (file.size > MAX_IMAGE_SIZE_BYTES) {
+            toast.error(`Файл слишком большой. Максимальный размер ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)} МБ.`);
+            return;
+        }
+
+        setIsImageLoading(true);
+        setImageFile(file);
+        setImagePreview(URL.createObjectURL(file));
+        setIsImageLoading(false);
+    }, []);
+
     const handleImageChange = (e) => {
         const file = e.target.files[0];
-        if (file) {
-            setImageFile(file);
-            setImagePreview(URL.createObjectURL(file));
-        }
+        handleImageFile(file);
     };
 
     const removeImage = () => {
@@ -194,11 +242,13 @@ function App() {
         recognition.lang = 'ru-RU';
         recognition.interimResults = true;
         recognitionRef.current = recognition;
+
         recognition.onstart = () => setIsListening(true);
         recognition.onend = () => setIsListening(false);
         recognition.onerror = (event) => {
             console.error("Ошибка распознавания:", event.error);
             setIsListening(false);
+            toast.error("Ошибка голосового ввода.");
         };
         recognition.onresult = (event) => {
             let finalTranscript = '';
@@ -217,42 +267,37 @@ function App() {
     const handleSendMessage = async (e, { overrideText = null, overrideHistory = null } = {}) => {
         e.preventDefault();
         const textToSend = overrideText ?? userInput;
-        if ((!textToSend.trim() && !imageFile) || isLoading) return;
-
+        if ((!textToSend.trim() && !imageFile && !editingMessage) || isLoading) return;
+    
         abortControllerRef.current = new AbortController();
-
+    
         let currentChat;
         let currentChatId = activeChatId;
-        let isNewChat = !currentChatId;
-
-        if (isNewChat) {
-            currentChat = { 
-                id: Date.now(), 
-                title: 'Новый чат', 
-                history: [], 
-                session: null, 
-                systemInstruction: '' 
-            };
-            currentChatId = currentChat.id;
-            currentChat.session = initializeChatSession([], currentChat.systemInstruction);
-            if (!currentChat.session) return;
-            setChats(prev => [currentChat, ...prev]);
-            setActiveChatId(currentChatId);
+    
+        if (!currentChatId) {
+            const newChat = createNewChat();
+            if (!newChat) {
+                setIsLoading(false);
+                return;
+            }
+            currentChat = newChat;
+            currentChatId = newChat.id;
         } else {
             currentChat = chats.find(c => c.id === currentChatId);
         }
-        
+    
         if (!currentChat || !currentChat.session) {
             toast.error("Ошибка сессии. Попробуйте создать новый чат.");
+            setIsLoading(false);
             return;
         }
         
         setIsLoading(true);
-
+    
         const userMessageParts = [];
         if (imageFile) userMessageParts.push({ image: imagePreview });
         if (textToSend.trim()) userMessageParts.push({ text: textToSend });
-
+    
         const contentsForAI = [];
         if (imageFile) {
             const base64Data = await fileToBase64(imageFile);
@@ -263,11 +308,21 @@ function App() {
         }
         
         const historyForUpdate = overrideHistory ?? currentChat.history;
-        const historyWithUserMessage = [...historyForUpdate, { role: 'user', parts: userMessageParts }];
-        
+        const userMessage = { role: 'user', parts: userMessageParts };
+        const historyWithUserMessage = [...historyForUpdate, userMessage];
+
+        // 1. Добавляем сообщение пользователя сразу
         setChats(prev => prev.map(chat =>
             chat.id === currentChatId ? { ...chat, history: historyWithUserMessage } : chat
         ));
+
+        // 2. Моментально добавляем плейсхолдер для ответа модели
+        setChats(prev => prev.map(chat => {
+            if (chat.id === currentChatId) {
+                return { ...chat, history: [...historyWithUserMessage, { role: 'model', parts: [{ text: '' }] }] };
+            }
+            return chat;
+        }));
         
         const userInputForTitle = textToSend;
         setUserInput('');
@@ -276,37 +331,49 @@ function App() {
         try {
             const result = await currentChat.session.sendMessageStream(contentsForAI, { signal: abortControllerRef.current.signal });
             let modelResponse = '';
-            const modelMessagePlaceholder = { role: 'model', parts: [{ text: '' }] };
-            const historyWithPlaceholder = [...historyWithUserMessage, modelMessagePlaceholder];
-            setChats(prev => prev.map(chat => chat.id === currentChatId ? {...chat, history: historyWithPlaceholder} : chat));
-
+            
             for await (const chunk of result.stream) {
                 modelResponse += chunk.text();
-                setChats(prev => prev.map(chat => {
+                // 3. Обновляем состояние, находя последнее сообщение (которое должно быть плейсхолдером модели)
+                // Используем функциональное обновление для надежности
+                setChats(prevChats => prevChats.map(chat => {
                     if (chat.id === currentChatId) {
                         const newHistory = [...chat.history];
-                        newHistory[newHistory.length - 1].parts[0].text = modelResponse;
+                        // Находим последнее сообщение (предполагаем, что это плейсхолдер модели)
+                        // Убеждаемся, что parts[0] существует
+                        if (newHistory.length > 0 && newHistory[newHistory.length - 1].role === 'model' && newHistory[newHistory.length - 1].parts[0]) {
+                            newHistory[newHistory.length - 1].parts[0].text = modelResponse;
+                        } else {
+                            // Если по какой-то причине плейсхолдер отсутствует или некорректен, добавляем новый
+                            newHistory.push({ role: 'model', parts: [{ text: modelResponse }] });
+                        }
                         return { ...chat, history: newHistory };
                     }
                     return chat;
                 }));
             }
-
-            if (isNewChat || (overrideHistory && overrideHistory.length === 0)) {
+    
+            if (historyForUpdate.length === 0) {
                 try {
-                    const titleGenModel = initializeChatSession([], "You are an expert at creating short, descriptive titles.");
-                    const titlePrompt = `Generate a very short, concise title (3-5 words) for the following conversation:\n\nUser: "${userInputForTitle}"\n\nModel: "${modelResponse}"`;
+                    const titleGenModel = initializeChatSession([], "You are an expert at creating very short, descriptive chat titles (1-3 words).");
+                    const titlePrompt = `Проанализируй язык следующего диалога и создай ОЧЕНЬ КОРОТКИЙ, ёмкий заголовок (1-3 слова, только заголовок, без знаков препинания в конце) на том же языке. Вот диалог:\n\nПользователь: "${userInputForTitle}"\n\nМодель: "${modelResponse}"`;
                     const titleResult = await titleGenModel.sendMessage(titlePrompt);
-                    const newTitle = titleResult.response.text().replace(/"/g, '').trim();
+                    let newTitle = titleResult.response.text().replace(/"/g, '').trim();
 
+                    newTitle = newTitle.replace(/\*\*/g, '');
+                    newTitle = newTitle.replace(/[\.\?!,;:]$/, '');
+                    
                     setChats(prev => prev.map(chat =>
                         chat.id === currentChatId ? { ...chat, title: newTitle } : chat
                     ));
                 } catch (titleError) {
                     console.error("Не удалось сгенерировать заголовок:", titleError);
+                    setChats(prev => prev.map(chat =>
+                        chat.id === currentChatId ? { ...chat, title: 'Без названия' } : chat
+                    ));
                 }
             }
-
+    
         } catch (error) {
             if (error.name === 'AbortError') {
                 toast.success('Генерация отменена');
@@ -316,7 +383,7 @@ function App() {
             } else {
                 console.error("Ошибка отправки сообщения:", error);
                 toast.error("Произошла ошибка при отправке сообщения.");
-                const errorHistory = [...historyWithUserMessage, { role: 'model', parts: [{ text: "Извините, произошла ошибка." }] }];
+                const errorHistory = [...historyWithUserMessage, { role: 'model', parts: [{ text: "Извините, произошла ошибка при генерации ответа." }] }];
                 setChats(prev => prev.map(chat => chat.id === currentChatId ? {...chat, history: errorHistory} : chat));
             }
         } finally {
@@ -341,12 +408,14 @@ function App() {
         const truncatedHistory = targetChat.history.slice(0, msgIndex);
 
         const fakeEvent = { preventDefault: () => {} };
+        setActiveChatId(chatId);
         await handleSendMessage(fakeEvent, { overrideText: text, overrideHistory: truncatedHistory });
         
         setEditingMessage(null);
     };
 
     const handleExportChat = () => {
+        const activeChat = chats.find(chat => chat.id === activeChatId);
         if (!activeChat) {
             toast.error("Выберите чат для экспорта.");
             return;
@@ -367,7 +436,7 @@ function App() {
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `${activeChat.title.replace(/ /g, '_')}.txt`;
+        link.download = `${activeChat.title.replace(/ /g, '_') || 'chat'}.txt`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -377,6 +446,30 @@ function App() {
     
     const filteredChats = chats.filter(chat => chat.title.toLowerCase().includes(searchTerm.toLowerCase()));
     const activeChat = chats.find(chat => chat.id === activeChatId);
+
+    // Обработчики для Drag & Drop
+    const handleDragOver = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDragging(true);
+    }, []);
+
+    const handleDrop = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            handleImageFile(files[0]);
+        }
+    }, [handleImageFile]);
+
+    const handleDragLeave = useCallback((e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+    }, []);
     
     return (
         <div className="app-container">
@@ -432,6 +525,17 @@ function App() {
             
             <main className={`chat-area ${isSidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
                 <div className="chat-content-wrapper">
+                    {activeChat && (
+                        <div className="system-instruction-container">
+                            <textarea
+                                className="system-instruction-input"
+                                placeholder="Системная инструкция (задайте роль для ИИ)..."
+                                value={activeChat.systemInstruction || ''}
+                                onChange={(e) => handleSystemInstructionChange(e, activeChat.id)}
+                                rows="1"
+                            />
+                        </div>
+                    )}
                     <div className="message-list" ref={messageListRef}>
                         {activeChat && activeChat.history.length > 0 ? (
                             activeChat.history.map((msg, index) => (
@@ -441,7 +545,7 @@ function App() {
                                         <div className="message-content">
                                             {editingMessage && editingMessage.chatId === activeChat.id && editingMessage.msgIndex === index ? (
                                                 <div className="edit-container">
-                                                    <textarea 
+                                                    <textarea
                                                         value={editingMessage.text}
                                                         onChange={(e) => setEditingMessage({...editingMessage, text: e.target.value})}
                                                         className="edit-textarea"
@@ -460,8 +564,8 @@ function App() {
                                                         return null;
                                                     })}
                                                     {msg.role === 'user' && !isLoading && (
-                                                        <button 
-                                                            className="edit-button" 
+                                                        <button
+                                                            className="edit-button"
                                                             title="Редактировать"
                                                             onClick={() => startEditing(activeChat.id, index, msg.parts.find(p => p.text)?.text || '')}>
                                                             ✏️
@@ -492,26 +596,34 @@ function App() {
                             {imagePreview && (
                                 <div className="image-preview">
                                     <img src={imagePreview} alt="preview" />
+                                    {isImageLoading && <div className="image-loading-spinner"></div>}
                                     <button onClick={removeImage} className="remove-image-button">×</button>
                                 </div>
                             )}
-                            <form onSubmit={handleSendMessage} className="message-form">
-                                <button type="button" onClick={() => fileInputRef.current.click()} className="control-button-input" title="Прикрепить изображение" disabled={isLoading}>
+                            <form
+                                onSubmit={handleSendMessage}
+                                className={`message-form ${isDragging ? 'is-dragging' : ''}`}
+                                onDragOver={handleDragOver}
+                                onDrop={handleDrop}
+                                onDragLeave={handleDragLeave}
+                            >
+                                <button type="button" onClick={() => fileInputRef.current.click()} className="control-button-input" title="Прикрепить изображение" disabled={isLoading || isImageLoading}>
                                     <span className="icon-attach"></span>
                                 </button>
                                 <input type="file" ref={fileInputRef} onChange={handleImageChange} style={{ display: 'none' }} accept="image/*" />
                                 <textarea
+                                    ref={textareaRef}
                                     value={userInput}
                                     onChange={(e) => setUserInput(e.target.value)}
                                     placeholder="Спросите что-нибудь у Gemini..."
-                                    disabled={isLoading}
+                                    disabled={isLoading || isImageLoading}
                                     rows="1"
                                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }}
                                 />
-                                <button type="button" onClick={handleVoiceInput} className={`control-button-input ${isListening ? 'listening' : ''}`} title="Голосовой ввод">
+                                <button type="button" onClick={handleVoiceInput} className={`control-button-input ${isListening ? 'listening' : ''}`} title="Голосовой ввод" disabled={isLoading || isImageLoading}>
                                     <span className="icon-mic"></span>
                                 </button>
-                                <button type="submit" className="send-button" title="Отправить" disabled={(!userInput.trim() && !imageFile) || isLoading}>
+                                <button type="submit" className="send-button" title="Отправить" disabled={(!userInput.trim() && !imageFile) || isLoading || isImageLoading}>
                                     {isLoading ? <div className="loading-spinner"></div> : <span className="icon-send"></span>}
                                 </button>
                             </form>
